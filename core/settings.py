@@ -28,7 +28,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
 
-SECRET_KEY = os.getenv("SECRET_KEY")
+SECRET_KEY = "kdbsfnfsjkdnkjdfn"
 DEBUG = os.getenv("DEBUG") == "True"
 
 
@@ -49,21 +49,34 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
 ]+ [
    'foodapi',
+   'auths',
 
 ]+ [ 
     #third party apps
     'rest_framework',
+    "rest_framework_simplejwt.token_blacklist",
 ]
 
 REST_FRAMEWORK = {
-    'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.AllowAny',
-    ],
-    'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.SessionAuthentication',
-        'rest_framework.authentication.TokenAuthentication',
-    ],
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ),
+    "DEFAULT_PERMISSION_CLASSES": (
+        "rest_framework.permissions.IsAuthenticated",
+    ),
 }
+
+from datetime import timedelta
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=7),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=30),
+
+    # required for logout blacklisting
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+}
+
 
 
 MIDDLEWARE = [
