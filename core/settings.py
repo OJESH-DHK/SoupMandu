@@ -48,7 +48,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
 ]+ [
-   
+   'foodapi',
 
 ]+ [ 
     #third party apps
