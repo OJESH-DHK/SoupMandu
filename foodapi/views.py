@@ -4,7 +4,7 @@ from rest_framework import status
 from ultralytics import YOLO
 from PIL import Image
 import io
-
+from rest_framework.permissions import AllowAny
 # Load model ONCE (important for performance)
 MODEL_PATH = "models/best.pt"
 model = YOLO(MODEL_PATH)
@@ -13,7 +13,7 @@ class FoodRecognitionAPIView(APIView):
     """
     POST image -> returns predicted food name and confidence
     """
-
+    permission_classes = [AllowAny] 
     def post(self, request):
         image_file = request.FILES.get("image")
 
