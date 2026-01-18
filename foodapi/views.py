@@ -6,10 +6,17 @@ from PIL import Image
 import io
 from rest_framework.permissions import AllowAny
 from django.shortcuts import get_object_or_404
-from .models import FoodItem, PortionType
-from .serializers import FoodNutritionRequestSerializer
-
-
+from .models import FoodItem, PortionType,FoodLog
+from .serializers import FoodNutritionRequestSerializer,FoodLogCreateSerializer,FoodLogSerializer
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
+from utils.calculate_nutr import compute_nutrition
+from rest_framework.permissions import IsAuthenticated
+from django.utils.dateparse import parse_date
+from rest_framework.generics import ListAPIView
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import ValidationError
+from django.utils import timezone
 # Load model ONCE 
 MODEL_PATH = "models/best.pt"
 model = YOLO(MODEL_PATH)
@@ -31,9 +38,15 @@ class FoodRecognitionAPIView(APIView):
             )
 
         try:
-            # Read image
-            image_bytes = image_file.read()
-            image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            # Save image
+            image_path = default_storage.save(
+                f"food_detection/{image_file.name}",
+                ContentFile(image_file.read())
+            )
+            image_url = request.build_absolute_uri(default_storage.url(image_path))
+
+            # Re-open image for model
+            image = Image.open(default_storage.open(image_path)).convert("RGB")
 
             # Run classification
             results = model.predict(image, verbose=False)
@@ -41,13 +54,9 @@ class FoodRecognitionAPIView(APIView):
 
             top_index = probs.top1
             confidence = float(probs.top1conf)
-
-            # Normalize label for DB lookup
             label = str(model.names[top_index]).strip().lower()
 
-            # Find food in DB
             food_obj = FoodItem.objects.filter(name=label, is_active=True).first()
-
             portion_type = food_obj.portion_type if food_obj else None
 
             print(
@@ -59,7 +68,8 @@ class FoodRecognitionAPIView(APIView):
             return Response({
                 "food": label,
                 "confidence": round(confidence, 4),
-                "portion_type": portion_type,  # 👈 important
+                "portion_type": portion_type,
+                "image_url": image_url,
             })
 
         except Exception as e:
@@ -74,10 +84,9 @@ class FoodNutritionAPIView(APIView):
     POST:
       - { "food": "momo", "pieces": 10 }
       - { "food": "dalbhat", "size": "medium" }
-
-    Returns macros totals.
     """
     permission_classes = [AllowAny]
+
     def post(self, request):
         serializer = FoodNutritionRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -86,10 +95,8 @@ class FoodNutritionAPIView(APIView):
         pieces = serializer.validated_data.get("pieces")
         size = serializer.validated_data.get("size")
 
-        # Find food + nutrition
         food = get_object_or_404(FoodItem, name=food_name, is_active=True)
 
-        # Ensure nutrition exists
         nutrition = getattr(food, "nutrition", None)
         if not nutrition:
             return Response(
@@ -97,65 +104,74 @@ class FoodNutritionAPIView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # COUNTABLE -> needs pieces
-        if food.portion_type == PortionType.COUNTABLE:
-            if pieces is None:
-                return Response(
-                    {"error": "This food is countable. Please provide 'pieces'."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+        try:
+            result = compute_nutrition(food, pieces=pieces, size=size)
+        except ValueError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Ensure per_piece values exist
-            if nutrition.calories_per_piece is None:
-                return Response(
-                    {"error": f"Per-piece nutrition not set for '{food.name}'"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+        return Response({
+            "food": food.name,
+            "portion_type": food.portion_type,
+            **{k: round(v, 2) if isinstance(v, (int, float)) else v for k, v in result.items()}
+        })
 
-            calories = (nutrition.calories_per_piece or 0) * pieces
-            protein = (nutrition.protein_per_piece or 0) * pieces
-            carbs = (nutrition.carbs_per_piece or 0) * pieces
-            fat = (nutrition.fat_per_piece or 0) * pieces
 
-            return Response({
-                "food": food.name,
-                "portion_type": food.portion_type,
-                "unit": "piece",
-                "quantity": pieces,
-                "calories": round(calories, 2),
-                "protein": round(protein, 2),
-                "carbs": round(carbs, 2),
-                "fat": round(fat, 2),
-            })
+class EatFoodAPIView(APIView):
+    """
+    Saves FoodLog only when user presses EAT
+    """
+    permission_classes = [IsAuthenticated]
+    def post(self, request):
+        serializer = FoodLogCreateSerializer(
+            data=request.data,
+            context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        log = serializer.save()
 
-        # PORTION -> needs size
-        if food.portion_type == PortionType.PORTION:
-            if not size:
-                return Response(
-                    {"error": "This food uses portion sizes. Please provide 'size' (small/medium/large)."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+        return Response(
+            FoodLogCreateSerializer(log).data,
+            status=status.HTTP_201_CREATED
+        )
+    
 
-            cal = getattr(nutrition, f"calories_{size}", None)
-            pro = getattr(nutrition, f"protein_{size}", None)
-            car = getattr(nutrition, f"carbs_{size}", None)
-            fat = getattr(nutrition, f"fat_{size}", None)
+class FoodLogListAPIView(ListAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = FoodLogSerializer
 
-            if cal is None:
-                return Response(
-                    {"error": f"Portion nutrition not set for '{food.name}' size '{size}'"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+    def get_queryset(self):
+        qs = FoodLog.objects.filter(
+            user=self.request.user
+        ).select_related("food_item")
 
-            return Response({
-                "food": food.name,
-                "portion_type": food.portion_type,
-                "unit": "portion",
-                "size": size,
-                "calories": round(float(cal or 0), 2),
-                "protein": round(float(pro or 0), 2),
-                "carbs": round(float(car or 0), 2),
-                "fat": round(float(fat or 0), 2),
-            })
+        params = self.request.query_params
 
-        return Response({"error": "Invalid portion type on food item"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        # ✅ TODAY filter
+        if params.get("today") == "true":
+            today = timezone.localdate()
+            return qs.filter(created_at__date=today).order_by("-created_at")
+
+        # Existing filters
+        date_str = params.get("date")
+        start_str = params.get("start_date")
+        end_str = params.get("end_date")
+
+        if date_str:
+            d = parse_date(date_str)
+            if not d:
+                raise ValidationError({"date": "Use YYYY-MM-DD"})
+            qs = qs.filter(created_at__date=d)
+
+        if start_str:
+            sd = parse_date(start_str)
+            if not sd:
+                raise ValidationError({"start_date": "Use YYYY-MM-DD"})
+            qs = qs.filter(created_at__date__gte=sd)
+
+        if end_str:
+            ed = parse_date(end_str)
+            if not ed:
+                raise ValidationError({"end_date": "Use YYYY-MM-DD"})
+            qs = qs.filter(created_at__date__lte=ed)
+
+        return qs.order_by("-created_at")

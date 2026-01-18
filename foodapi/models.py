@@ -1,9 +1,7 @@
 from django.db import models
-
-class PortionType(models.TextChoices):
-    COUNTABLE = "COUNTABLE", "Countable (pieces)"
-    PORTION = "PORTION", "Portion (S/M/L)"
-
+from django.utils import timezone
+from utils.enums import PortionType
+from django.conf import settings
 
 class FoodItem(models.Model):
     name = models.CharField(max_length=120, unique=True)
@@ -55,3 +53,33 @@ class FoodNutrition(models.Model):
 
     def __str__(self):
         return f"Nutrition: {self.food.name}"
+
+
+
+
+class FoodLog(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="food_logs")
+    image = models.ImageField(upload_to="food_detection/")
+
+    food_item = models.ForeignKey(
+        FoodItem,
+        on_delete=models.PROTECT, 
+        related_name="logs"
+    )
+
+    confidence = models.FloatField()
+
+    pieces = models.FloatField(null=True, blank=True)
+    size = models.CharField(max_length=10, null=True, blank=True)  # small/medium/large
+
+    calories = models.FloatField(null=True, blank=True)
+    protein = models.FloatField(null=True, blank=True)
+    carbs = models.FloatField(null=True, blank=True)
+    fat = models.FloatField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)    
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.food_item.name} @ {self.created_at:%Y-%m-%d %H:%M}"
