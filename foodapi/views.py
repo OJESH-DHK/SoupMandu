@@ -175,3 +175,22 @@ class FoodLogListAPIView(ListAPIView):
             qs = qs.filter(created_at__date__lte=ed)
 
         return qs.order_by("-created_at")
+
+class DailySummaryAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        today = timezone.localdate()
+        
+        # Sum of calories eaten today
+        logs = FoodLog.objects.filter(user=user, created_at__date=today)
+        total_eaten = sum(log.calories for log in logs if log.calories)
+        
+        goal = user.profile.daily_calorie_goal
+
+        return Response({
+            "daily_goal": goal,
+            "total_eaten": total_eaten,
+            "remaining": (goal - total_eaten) if goal else 0
+        })
