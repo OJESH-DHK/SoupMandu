@@ -116,11 +116,14 @@ class FoodNutritionAPIView(APIView):
         })
 
 
+
+
 class EatFoodAPIView(APIView):
     """
-    Saves FoodLog only when user presses EAT
+    Saves FoodLog and updates user's daily calorie consumption
     """
     permission_classes = [IsAuthenticated]
+    
     def post(self, request):
         serializer = FoodLogCreateSerializer(
             data=request.data,
@@ -128,7 +131,11 @@ class EatFoodAPIView(APIView):
         )
         serializer.is_valid(raise_exception=True)
         log = serializer.save()
-
+        
+        # ✅ Update user's daily calorie consumption
+        profile = request.user.profile
+        profile.add_calories(log.calories or 0)
+        
         return Response(
             FoodLogCreateSerializer(log).data,
             status=status.HTTP_201_CREATED
@@ -176,21 +183,23 @@ class FoodLogListAPIView(ListAPIView):
 
         return qs.order_by("-created_at")
 
+# food_api/views.py
+
 class DailySummaryAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        user = request.user
-        today = timezone.localdate()
+        profile = request.user.profile
         
-        # Sum of calories eaten today
-        logs = FoodLog.objects.filter(user=user, created_at__date=today)
-        total_eaten = sum(log.calories for log in logs if log.calories)
+        # Reset calories if new day
+        profile.reset_daily_calories_if_needed()
         
-        goal = user.profile.daily_calorie_goal
-
+        # Calculate remaining
+        remaining = (profile.daily_calorie_goal - profile.calories_consumed_today) if profile.daily_calorie_goal else 0
+        
         return Response({
-            "daily_goal": goal,
-            "total_eaten": total_eaten,
-            "remaining": (goal - total_eaten) if goal else 0
+            "daily_goal": profile.daily_calorie_goal,
+            "total_eaten": profile.calories_consumed_today,
+            "remaining": remaining,
+            "percentage_consumed": round((profile.calories_consumed_today / profile.daily_calorie_goal * 100), 2) if profile.daily_calorie_goal else 0
         })

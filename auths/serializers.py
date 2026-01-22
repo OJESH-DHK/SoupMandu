@@ -1,5 +1,5 @@
+# auths/serializers.py
 from django.contrib.auth import get_user_model
-from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .models import UserProfile
@@ -8,18 +8,40 @@ from utils.calculate_nutr import calculate_daily_calories
 User = get_user_model()
 
 
-
-
 class UserProfileSerializer(serializers.ModelSerializer):
+    calories_remaining = serializers.SerializerMethodField()
+    
     class Meta:
         model = UserProfile
-        fields = ('age', 'gender', 'weight', 'height', 'goal', 'activity_level')
+        fields = (
+            'age', 'gender', 'weight', 'height', 'goal', 'activity_level',
+            'daily_calorie_goal', 'calories_consumed_today', 'calories_remaining'
+        )
+        read_only_fields = ('daily_calorie_goal', 'calories_consumed_today')
+    
+    def get_calories_remaining(self, obj):
+        """Calculate remaining calories for today"""
+        obj.reset_daily_calories_if_needed()
+        if obj.daily_calorie_goal:
+            return obj.daily_calorie_goal - obj.calories_consumed_today
+        return 0
+    
+    def update(self, instance, validated_data):
+        """Update profile and recalculate calorie goal"""
+        # Update fields
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        
+        # Recalculate daily calorie goal
+        instance.recalculate_daily_goal()
+        
+        return instance
+
 
 class SignupSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=8)
     password2 = serializers.CharField(write_only=True, min_length=8)
     
-    # Include profile fields
     profile = UserProfileSerializer()
 
     class Meta:
@@ -58,13 +80,8 @@ class SignupSerializer(serializers.ModelSerializer):
 
 
 class LoginSerializer(TokenObtainPairSerializer):
-    """
-    Returns access + refresh tokens.
-    You can add extra fields into response if you want.
-    """
     @classmethod
     def get_token(cls, user):
         token = super().get_token(user)
-        # optional custom claims:
         token["username"] = user.username
         return token
